@@ -65,6 +65,68 @@ gpu_off_bus_wedge() {
   return 0
 }
 
+# --- H1: CPU-fallback / stale-CUDA serving-health helpers (roadmap 12.1 v4) ----
+# The device can read perfectly healthy (gpu_present + gpu_responsive true) while
+# llama-swap silently serves on CPU after a bus re-enumeration left the container's
+# CUDA handles stale (see qmd [[llama-swap-cpu-fallback-stale-cuda]]). gpu_off_bus_wedge
+# and friends CANNOT see this — it is a SERVING-health check, not a DEVICE-health check.
+#
+# Every input here is env-overridable so the predicate can be unit-tested against a
+# SYNTHESIZED (/running ready + low VRAM) state with no GPU and no live serving:
+#   VRAM_USED_OVERRIDE   — MiB integer, bypasses nvidia-smi
+#   COMPUTE_APPS_OVERRIDE— newline/space list of process names, bypasses nvidia-smi
+#   LLAMA_SWAP_RUNNING_OVERRIDE — raw JSON string, bypasses the curl to /running
+LLAMA_SWAP_URL="${LLAMA_SWAP_URL:-http://127.0.0.1:8081}"
+CPU_FALLBACK_VRAM_MIB="${CPU_FALLBACK_VRAM_MIB:-2048}"   # < this while a model is 'ready' => CPU-fallback
+
+# Total VRAM used, MiB (integer). Prints nothing + returns 1 if it can't be read.
+# Overrides use is-SET (${VAR+x}) not is-non-empty, so an explicit empty injected
+# value is honoured (e.g. COMPUTE_APPS_OVERRIDE="" means "no compute apps").
+gpu_vram_used_mib() {
+  if [ -n "${VRAM_USED_OVERRIDE+x}" ]; then printf '%s\n' "$VRAM_USED_OVERRIDE"; return 0; fi
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  local v
+  v="$(timeout 8 nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
+  [ -n "$v" ] && printf '%s\n' "$v" || return 1
+}
+
+# True (0) if a `llama-server` compute app currently holds the GPU.
+gpu_has_llama_compute_app() {
+  local apps
+  if [ -n "${COMPUTE_APPS_OVERRIDE+x}" ]; then apps="$COMPUTE_APPS_OVERRIDE";
+  else
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    apps="$(timeout 8 nvidia-smi --query-compute-apps=process_name --format=csv,noheader 2>/dev/null)"
+  fi
+  printf '%s' "$apps" | grep -q 'llama-server'
+}
+
+# Raw llama-swap /running JSON (best effort). Empty on failure.
+llama_swap_running_json() {
+  if [ -n "${LLAMA_SWAP_RUNNING_OVERRIDE+x}" ]; then printf '%s' "$LLAMA_SWAP_RUNNING_OVERRIDE"; return 0; fi
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -s --max-time 6 "$LLAMA_SWAP_URL/running" 2>/dev/null || true
+}
+
+# True (0) if llama-swap reports at least one model in state "ready".
+llama_swap_model_ready() {
+  llama_swap_running_json | grep -q '"state" *: *"ready"'
+}
+
+# THE H1 PREDICATE. True (0) == CPU-fallback: a model is loaded/ready but the GPU
+# is not actually doing the work. Deliberately conservative — it only fires when a
+# model claims 'ready' (so an idle, swapped-out model with low VRAM is NOT flagged).
+# CPU-fallback == ready AND (VRAM below the floor OR no llama-server compute app).
+gpu_cpu_fallback() {
+  llama_swap_model_ready || return 1            # no model ready => not this failure
+  local vram
+  if vram="$(gpu_vram_used_mib)" && [ -n "$vram" ]; then
+    [ "$vram" -lt "$CPU_FALLBACK_VRAM_MIB" ] && return 0
+  fi
+  gpu_has_llama_compute_app || return 0         # ready but no compute app => CPU-fallback
+  return 1
+}
+
 # Recent "fallen off the bus" / Xid 79 / Xid 154 evidence in the kernel ring
 # buffer (best-effort; needs readable dmesg). Prints matching lines.
 gpu_bus_fault_dmesg() {

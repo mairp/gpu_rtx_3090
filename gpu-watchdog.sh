@@ -8,18 +8,36 @@
 #       agentops_gpu_degraded=1 into the node-exporter textfile collector, which
 #       the existing NVIDIA alert path (AgentOpsGPUDegraded rule) picks up.
 #
-# It does NOT attempt recovery. A wedge needs an OS reboot (detach/rescan queues
-# onto the stuck thunderbolt kworker and hangs — see gpu-status.sh / lib.sh).
-# That is a human call; the watchdog only observes, flags, and alerts.
+# For the Xid-79 wedge it does NOT attempt recovery: a wedge needs an OS reboot
+# (detach/rescan queues onto the stuck thunderbolt kworker and hangs — see
+# gpu-status.sh / lib.sh). That is a human call; the watchdog only observes,
+# flags, and alerts.
+#
+# H1 (roadmap 12.1 v4): it ALSO detects a quieter failure the device-health checks
+# miss — CPU-fallback / stale-CUDA. After a bus re-enumeration the container's CUDA
+# handles go stale and llama.cpp silently serves on CPU (GPU reads healthy, VRAM
+# ~1 MiB, 35B MoE ~13 tok/s). Predicate: llama-swap reports a model 'ready' AND
+# VRAM below the floor (or no llama-server compute app) => degraded reason=cpu-fallback.
+# Unlike a wedge, the sanctioned fix is REVERSIBLE — a one-shot
+# `docker compose up -d --force-recreate` (re-injects the nvidia device → fresh CUDA
+# handles; a child respawn does NOT fix it, see [[llama-swap-cpu-fallback-stale-cuda]]).
+# That remediation is OPT-IN and bounded (one attempt/episode, then escalate to human):
+# the shared serving is touched only when a human turns it on, per the executor rule.
 #
 # The orchestrator's dispatch prompt reads /run/agentops/gpu-degraded: present =>
-# route leaf work to Compass (DEGRADED mode) and say so.
+# route leaf work to Compass (DEGRADED mode) and say so. reason=cpu-fallback is
+# consumed identically to any other degraded reason.
 #
 # Run once (systemd timer, every ~30s during agent runs) or by hand:
-#   gpu-watchdog.sh            # poll once, set/clear flag, emit metric
-#   gpu-watchdog.sh --simulate # force a degraded flag+metric for testing (no GPU touch)
-#   gpu-watchdog.sh --clear    # clear a flag (e.g. after a verified reboot recovery)
-#   gpu-watchdog.sh --status   # print current flag state, touch nothing
+#   gpu-watchdog.sh                    # poll once, set/clear flag, emit metric
+#   gpu-watchdog.sh --simulate         # force a generic degraded flag+metric (no GPU touch)
+#   gpu-watchdog.sh --simulate-cpu-fallback # force a cpu-fallback flag+metric (no GPU touch)
+#   gpu-watchdog.sh --clear            # clear a flag (e.g. after verified recovery)
+#   gpu-watchdog.sh --status           # print current flag state, touch nothing
+#
+# Env:
+#   AGENTOPS_CPU_FALLBACK_REMEDIATE=1  # opt in to the bounded one-shot recreate (default 0 = flag+alert only)
+#   AGENTOPS_REMEDIATE_DRY_RUN=1       # print the recreate command, do not run it
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -29,6 +47,17 @@ FLAG_DIR="${AGENTOPS_RUN_DIR:-/run/agentops}"
 FLAG="$FLAG_DIR/gpu-degraded"
 TEXTFILE_DIR="${TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
 METRIC="$TEXTFILE_DIR/agentops_gpu.prom"
+
+# H1 cpu-fallback config. Remediation is OFF by default: the shared serving is only
+# ever touched when a human opts in (executor rule: confirm before changing shared
+# GPU/serving state). When on, it is bounded to ONE recreate per degraded episode —
+# a per-episode stamp file prevents the 30s timer from loop-recreating (which could
+# mask the eGPU endurance fault).
+COMPOSE_FILE="${LLAMA_SWAP_COMPOSE:-/root/llama-swap/docker-compose.yml}"
+REMEDIATE="${AGENTOPS_CPU_FALLBACK_REMEDIATE:-0}"
+REMEDIATE_DRY_RUN="${AGENTOPS_REMEDIATE_DRY_RUN:-0}"
+REMEDIATE_STAMP="$FLAG_DIR/cpu-fallback-remediated"
+REMEDIATE_SETTLE="${AGENTOPS_REMEDIATE_SETTLE:-60}"   # seconds to wait for VRAM to go resident
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -80,7 +109,53 @@ case "${1:-}" in
     cat "$FLAG"
     exit 0
     ;;
+  --simulate-cpu-fallback)
+    set_flag "cpu-fallback"
+    echo "SIMULATED cpu-fallback degraded flag at $FLAG (+ metric reason=cpu-fallback). Clear with: $0 --clear"
+    cat "$FLAG"
+    exit 0
+    ;;
 esac
+
+# Bounded, opt-in, one-shot remediation for a cpu-fallback episode. Returns 0 if the
+# GPU is resident afterwards, 1 otherwise (caller escalates to human). NEVER loops:
+# the per-episode stamp is written before the attempt so a subsequent timer tick
+# will not re-recreate. A child kill is explicitly NOT a remedy (respawn inherits the
+# stale context) — only compose --force-recreate re-injects the device.
+remediate_cpu_fallback() {
+  if [ "$REMEDIATE" != 1 ]; then
+    warn "cpu-fallback: auto-remediation OFF (AGENTOPS_CPU_FALLBACK_REMEDIATE=1 to enable). Flag+alert set; escalate to human."
+    return 1
+  fi
+  if [ -e "$REMEDIATE_STAMP" ]; then
+    warn "cpu-fallback: already remediated once this episode ($REMEDIATE_STAMP) and VRAM still not resident — NOT looping. Escalate to human."
+    return 1
+  fi
+  command -v docker >/dev/null 2>&1 || { err "cpu-fallback: docker not found; cannot remediate. Escalate to human."; return 1; }
+  local cmd="docker compose -f $COMPOSE_FILE up -d --force-recreate"
+  if [ "$REMEDIATE_DRY_RUN" = 1 ]; then
+    log "cpu-fallback DRY-RUN: would run: $cmd"
+    return 1
+  fi
+  mkdir -p "$FLAG_DIR" 2>/dev/null || true
+  echo "remediated_at=$(now_iso)" > "$REMEDIATE_STAMP"
+  log "cpu-fallback: one-shot remediation → $cmd"
+  # shellcheck disable=SC2086
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate >/dev/null 2>&1 || warn "compose recreate returned nonzero"
+  # Wait up to REMEDIATE_SETTLE for VRAM to go resident.
+  local t0 now vram; t0=$(date +%s)
+  while :; do
+    vram="$(gpu_vram_used_mib || echo 0)"
+    if [ "${vram:-0}" -ge 5000 ] 2>/dev/null; then
+      ok "cpu-fallback: VRAM resident again (${vram} MiB) after recreate."
+      return 0
+    fi
+    now=$(date +%s); [ $((now - t0)) -ge "$REMEDIATE_SETTLE" ] && break
+    sleep 5
+  done
+  err "cpu-fallback: VRAM still not resident (${vram:-?} MiB) ${REMEDIATE_SETTLE}s after recreate. NOT retrying — escalate to human (possible eGPU endurance fault)."
+  return 1
+}
 
 # --- real poll ------------------------------------------------------------
 # Case 1: the Xid-79 wedge — enumerated but unresponsive. Only a reboot clears it,
@@ -107,6 +182,21 @@ if ! gpu_responsive; then
   exit 2
 fi
 
+# Case 3 (H1): device is healthy, but is llama-swap actually using it? CPU-fallback
+# reads healthy on every device check above, so it MUST be tested here. This is the
+# serving-health check that closes the S3 gap.
+if gpu_cpu_fallback; then
+  vram="$(gpu_vram_used_mib || echo '?')"
+  set_flag "cpu-fallback"
+  warn "CPU-FALLBACK: a model is 'ready' but the GPU isn't serving it (VRAM=${vram} MiB, no/low llama-server residency). Flag set reason=cpu-fallback; leafs go DEGRADED."
+  if remediate_cpu_fallback; then
+    clear_flag; rm -f "$REMEDIATE_STAMP" 2>/dev/null || true
+    ok "cpu-fallback remediated (serving resident); cleared flag."
+    exit 0
+  fi
+  exit 2
+fi
+
 # Healthy and responsive. Auto-clear ONLY a soft flag; a wedge flag persists until
 # a human clears it post-reboot (its reason won't be seen here because a wedge makes
 # the checks above fail — but guard anyway in case of a stale wedge flag on a now-healthy card).
@@ -118,10 +208,12 @@ if [ -e "$FLAG" ]; then
     exit 0
   fi
   clear_flag
+  rm -f "$REMEDIATE_STAMP" 2>/dev/null || true   # episode over; next cpu-fallback gets its one attempt
   ok "GPU healthy; cleared prior soft degraded flag (was: $reason)."
   exit 0
 fi
 
+rm -f "$REMEDIATE_STAMP" 2>/dev/null || true       # fully healthy; no episode in progress
 emit_metric 0
 ok "GPU healthy and responsive."
 exit 0
