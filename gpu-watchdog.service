@@ -1,0 +1,17 @@
+# gpu-watchdog.service — roadmap 12.1 S3. One-shot RTX 3090 health poll that
+# sets/clears /run/agentops/gpu-degraded and emits the agentops_gpu_degraded
+# metric. Triggered by gpu-watchdog.timer. Observe-and-flag only: NO recovery.
+#
+# Install:
+#   cp gpu-watchdog.service gpu-watchdog.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now gpu-watchdog.timer
+[Unit]
+Description=RTX 3090 eGPU watchdog (flag + alert on Xid-79 wedge; no recovery)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/gpu_rtx_3090/gpu-watchdog.sh
+# Never fail the unit on a degraded exit (2/3) — degraded is a valid poll result,
+# the flag + metric carry the signal. Only a script crash should show as failed.
+SuccessExitStatus=0 2 3
