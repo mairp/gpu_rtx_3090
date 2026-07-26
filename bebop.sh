@@ -1,3 +1,7 @@
+# shellcheck shell=bash
+# This file is SOURCED by ~/.bashrc (not executed), so it has no shebang; the
+# directive above tells shellcheck the target shell (fixes SC2148 in CI).
+#
 # bebop: Claude Code via cc-compass-shim (127.0.0.1:8088). First arg picks a backend;
 # everything after passes through to `claude`, e.g.  bebop qwen -p "hi".
 #
