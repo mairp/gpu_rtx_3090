@@ -12,8 +12,9 @@
 #   bebop qwen-big   -> Qwen3.6-35B-A3B  (MoE, larger)          alias: qwen35
 #   bebop coder      -> Qwen3-Coder-30B-A3B-Instruct  (coding specialist, -c 65536)
 #   bebop auto       -> qwen-auto (LiteLLM picks: reasoning->gpt-5, coding->coder, big->35B, else sticky local)
-# Cloud model on Compass STAGE (NOT llama-swap — via the shim's OPENAI_MODELS path):
-#   bebop gpt        -> Compass gpt-5.5  (cloud reasoning model; alias: gpt-5.5)
+# Cloud models on Compass STAGE (NOT llama-swap — via the shim's OPENAI_MODELS path):
+#   bebop gpt        -> Compass gpt-5.5      (cloud reasoning model; alias: gpt-5.5)
+#   bebop sol        -> Compass gpt-5.6-sol  (cloud reasoning model; alias: gpt-5.6-sol)
 #   bebop qwen-fp4   -> Qwen3.6-27B NVFP4  (only after Step 6 promotion; else falls back to 27B)
 #   add "-think" for the reasoning variant, e.g.  bebop qwen-think / bebop qwen-big-think
 #
@@ -46,6 +47,8 @@ bebop() {
     [auto]=qwen-auto           # LiteLLM auto-router: reasoning->gpt-5, coding->coder, big->35b, else sticky
     [gpt]=gpt-5.5              # cloud: Compass STAGE gpt-5.5 via shim OPENAI_MODELS (NOT llama-swap)
     [gpt-5.5]=gpt-5.5         # explicit-name alias for the same
+    [sol]=gpt-5.6-sol         # cloud: Compass STAGE gpt-5.6-sol via shim OPENAI_MODELS (NOT llama-swap)
+    [gpt-5.6-sol]=gpt-5.6-sol # explicit-name alias for the same
     # [qwen-fp4]=qwen3.6-27b-nvfp4
   )
   # Real served context per backend (llama-swap `-c`, raised 2026-07-12). Claude Code
@@ -61,6 +64,8 @@ bebop() {
     [auto]=131072
     [gpt]=98304               # shim routes gpt-5.5 via handle_qwen; no QWEN_CTX_MAP entry -> QWEN_CTX fallback (98304)
     [gpt-5.5]=98304          # so tell Claude Code the same window -> it auto-compacts before the shim's overflow 400
+    [sol]=98304               # gpt-5.6-sol: same shim OpenAI path, no QWEN_CTX_MAP entry -> QWEN_CTX fallback (98304)
+    [gpt-5.6-sol]=98304      # so tell Claude Code the same window -> it auto-compacts before the shim's overflow 400
   )
   local sel=${1:-compass} think=
   # bebop v3 subcommands (Phase 2): the agent tree. Dispatch to their functions and
