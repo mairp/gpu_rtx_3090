@@ -64,10 +64,10 @@ bebop() {
     [qwen35]=131072
     [coder]=65536              # matches llama-swap `-c 65536` for the coder (VRAM headroom)
     [auto]=131072
-    [gpt]=98304               # shim routes gpt-5.5 via handle_qwen; no QWEN_CTX_MAP entry -> QWEN_CTX fallback (98304)
-    [gpt-5.5]=98304          # so tell Claude Code the same window -> it auto-compacts before the shim's overflow 400
-    [sol]=98304               # gpt-5.6-sol: same shim OpenAI path, no QWEN_CTX_MAP entry -> QWEN_CTX fallback (98304)
-    [gpt-5.6-sol]=98304      # so tell Claude Code the same window -> it auto-compacts before the shim's overflow 400
+    [gpt]=200000              # gpt-5.5: shim QWEN_CTX_MAP entry gpt-5.5:200000 (spec 002 fix) -> match it
+    [gpt-5.5]=200000         # so Claude Code auto-compacts at the true 200k, not an artificial 98304 floor
+    [sol]=200000              # gpt-5.6-sol: shim QWEN_CTX_MAP entry gpt-5.6-sol:200000 (spec 002 fix) -> match it
+    [gpt-5.6-sol]=200000     # so Claude Code auto-compacts at the true 200k, not an artificial 98304 floor
   )
   local sel=${1:-compass} think=
   # bebop v3 subcommands (Phase 2): the agent tree. Dispatch to their functions and
