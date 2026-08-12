@@ -11,6 +11,8 @@
 #   bebop qwen       -> Qwen3.6-27B   (dense Q4_K_M, fast, no thinking)
 #   bebop muse       -> Muse Glimmer 30B (muse-glimmer-30b, MoE) deprecated aliases: qwen-big, qwen35
 #   bebop coder      -> Qwen3-Coder-30B-A3B-Instruct  (coding specialist, -c 65536)
+#   bebop nemotron   -> NVIDIA Nemotron 3.5 Lightning 30B-A3B (hybrid Mamba-2+MoE, -c 131072;
+#                       reasoning model — append -think for the thinking path)
 #   bebop auto       -> qwen-auto (LiteLLM picks: reasoning->gpt-5, coding->coder, big->Muse, else sticky local)
 # Cloud models on Compass STAGE (NOT llama-swap — via the shim's OPENAI_MODELS path):
 #   bebop gpt        -> Compass gpt-5.5      (cloud reasoning model; alias: gpt-5.5)
@@ -47,6 +49,8 @@ bebop() {
     [qwen-big]=muse-glimmer-30b  # deprecated alias -> Muse
     [qwen35]=muse-glimmer-30b    # deprecated alias -> Muse
     [coder]=qwen3-coder-30b-a3b  # coding-specialist MoE (roadmap 11.1); served -c 65536
+    [nemotron]=nemotron-lightning-30b  # NVIDIA Nemotron 3.5 Lightning 30B-A3B (hybrid Mamba-2+MoE)
+    [nemo]=nemotron-lightning-30b      # short alias for the same
     [auto]=qwen-auto           # LiteLLM auto-router: reasoning->gpt-5, coding->coder, big->Muse, else sticky
     [gpt]=gpt-5.5              # cloud: Compass STAGE gpt-5.5 via shim OPENAI_MODELS (NOT llama-swap)
     [gpt-5.5]=gpt-5.5         # explicit-name alias for the same
@@ -65,6 +69,8 @@ bebop() {
     [qwen-big]=131072           # deprecated alias -> Muse
     [qwen35]=131072             # deprecated alias -> Muse
     [coder]=65536              # matches llama-swap `-c 65536` for the coder (VRAM headroom)
+    [nemotron]=131072          # matches llama-swap `-c 131072` for Nemotron 3.5 Lightning
+    [nemo]=131072              # short alias -> same window
     [auto]=131072
     [gpt]=200000              # gpt-5.5: shim QWEN_CTX_MAP entry gpt-5.5:200000 (spec 002 fix) -> match it
     [gpt-5.5]=200000         # so Claude Code auto-compacts at the true 200k, not an artificial 98304 floor
