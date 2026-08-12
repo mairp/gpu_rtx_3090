@@ -43,7 +43,7 @@ Two failure families are covered:
   `reason=xid79-off-bus-wedge` / `gpu-absent` / `driver-unresponsive`. **No auto-recovery** —
   a wedge needs an OS reboot (human).
 - **Serving health (H1):** the GPU reads perfectly healthy but llama-swap silently serves on
-  **CPU** after a bus re-enumeration left the container's CUDA handles stale (35B MoE ~13 tok/s;
+  **CPU** after a bus re-enumeration left the container's CUDA handles stale (Muse MoE ~13 tok/s;
   see qmd `[[llama-swap-cpu-fallback-stale-cuda]]`). Device checks miss this. Predicate:
   a model is `ready` **AND** VRAM `< 2 GB` (or no `llama-server` compute-app) ⇒
   `reason=cpu-fallback`.
@@ -83,10 +83,10 @@ by a hung agent.
 | command | backend |
 |---|---|
 | `bebop` / `bebop compass` | Compass STAGE, `claude-opus-4.8` (default) |
-| `bebop qwen` / `bebop qwen-big`\|`qwen35` / `bebop coder` / `bebop auto` | local models via llama-swap (one in VRAM at a time) |
-| append `-think` | reasoning variant (e.g. `bebop qwen-big-think`) |
+| `bebop qwen` / `bebop muse` / `bebop coder` / `bebop auto` | local models via llama-swap (one in VRAM at a time); deprecated `qwen-big` and `qwen35` aliases resolve to Muse |
+| append `-think` | supported reasoning variant (e.g. `bebop qwen-think`); Muse thinking is not advertised |
 
-**bebop v3 — the frontier-fading agent TREE** (roadmap 12.1; opus plans, qwen executes,
+**bebop v3 — the frontier-fading agent TREE** (roadmap 12.1; opus plans, Muse executes,
 telemetry earns the trust). The agent pack (roles, contracts, escalation, config) lives in
 `$AGENTPACK_HOME` (default `/root/agent-pack`); `agentops` resolves each role's model for
 the current **LOCAL/DEGRADED** mode at launch and injects the whole pack via `claude
@@ -95,9 +95,11 @@ the single source of truth.
 
 | command | what it launches |
 |---|---|
-| `bebop team [args…]` | orchestrator on `claude-opus-4.8` + the agent pack loaded. Plan-first (use shift-tab plan mode; the approved plan becomes the task contract). Local workers (executor/investigator/librarian/scribe) run on `qwen3.6-35b-a3b`; frontier specialists (judge/architect/rescuer) on Compass. |
-| `bebop team-local [args…]` | the **destination** config: same tree, but the orchestrator itself is `qwen3.6-35b-a3b` (thinking on). Available from day 1 so its success rate is measured, not guessed — failure is an acceptable baseline. |
+| `bebop team [args…]` | orchestrator on `claude-opus-4.8` + the agent pack loaded. Plan-first (use shift-tab plan mode; the approved plan becomes the task contract). Local workers (executor/investigator/librarian/scribe) run on Muse (`muse-glimmer-30b`); frontier specialists (judge/architect/rescuer) on Compass. |
+| `bebop team-local [args…]` | the **destination** config: same tree, but the orchestrator itself is Muse (`muse-glimmer-30b`). Available from day 1 so its success rate is measured, not guessed — failure is an acceptable baseline. |
 | `bebop ask <role> "question"` | direct **read-only** line to a leaf, no orchestrator hop (spike S1b). Roles: `investigator` (fleet/AIOps — "why is X firing", "what's eating VRAM") and `librarian` (recall/docs — "what do we know about Y"). Hard read-only: plan permission mode (harness-enforced) + the role's read-only tool allowlist — `ask` can never mutate. Write-shaped roles are refused with a pointer to `bebop team`. |
+| `bebop ai-ops [args…]` | the **fleet director** (roadmap 14.1). Classifies an ops/dev request, then either runs one-shot ops through the guarded skills or dispatches the right worker / hands feature work to the SDD arm (`spec` → Wiggum) / hands plain coding to `bebop team`. Model resolves by ops affinity (LOCAL Muse, `muse-glimmer-30b`; DEGRADED `claude-opus-4.8`). Fenced to the `ai-ops` profile: 7 ops skills (`fleet-control`, `proxmox-triage`, `proxmox-ops`, `gpu-ops`, `local-model-ops`, `qmd-recall`, `antares-scan`), no MCP. It mutates only through the guarded scripts and emits telemetry for every change. |
+| `bebop spec [args…]` | the **SDD authoring** entrypoint (roadmap 14.1). Runs the `spec` role fenced to the `spec` profile: EXACTLY the ten `speckit-*` skills (reached on demand, not preloaded — preloading all ten would cost ~33k tokens), no MCP. Resolves to the frontier model while spec authoring is dialled `frontier-planned` (decomposition is the one thing not handed to the local model first). Use it to run `/speckit-specify` → `/speckit-plan` → `/speckit-tasks` and produce `spec.md`/`plan.md`/`tasks.md` BEFORE any Wiggum run — the director order (`ai-ops → spec → wiggum`) is a gate, not a preference. |
 
 Notes:
 - **Frontier is via the shim by default** (constraint #6). Every frontier call

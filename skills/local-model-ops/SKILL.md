@@ -1,15 +1,15 @@
 ---
 name: local-model-ops
 description: >-
-  Hardware-aware guidance for running the local Qwen3.6 models on the RTX 3090
+  Hardware-aware guidance for running local Qwen3.6 and Muse models on the RTX 3090
   eGPU (llama-swap on this host) - which model to pick, when to think, when to
   escalate to gpt-5/claude, and what the serving limits are. Use when asked
   "which local model should I use", "run this on qwen", "why is the local model
-  slow / truncated / swapping", "qwen vs qwen-big", or before starting a long
-  local-model job (bebop qwen / bebop qwen-big / pi / OpenClaw locals).
+  slow / truncated / swapping", "qwen vs muse", or before starting a long
+  local-model job (bebop qwen / bebop muse / pi / OpenClaw locals).
 ---
 
-# Local model ops — Qwen3.6 on the RTX 3090 (24 GB)
+# Local model ops — Qwen3.6 and Muse on the RTX 3090 (24 GB)
 
 Serving path: consumer -> cc-compass-shim :8088 (bebop/Claude Code only) ->
 LiteLLM :4000 -> llama-swap :8081 -> llama.cpp on the 3090. All numbers below
@@ -19,18 +19,18 @@ were measured in /root/benchmark_models (2026-07-11 tuning pass).
 
 - `qwen-auto` (via `bebop auto` or LiteLLM model `qwen-auto`): let the router
   decide - hard-reasoning cues go to gpt-5, big jobs (>~20k-token prompt or
-  max_tokens >= 4000) go to the 35B MoE, everything else sticks to whichever
-  local is already loaded (never forces a swap; idle default 27B). Good
-  default when you do not want to think about routing. Opt-in alias only -
-  the concrete model names below behave exactly as before.
+  max_tokens >= 4000) go to Muse, everything else sticks to whichever local
+  is already loaded (never forces a swap; idle default 27B). Good default when
+  you do not want to think about routing. Opt-in alias only - the concrete
+  model names below behave exactly as before.
 - `qwen3.6-27b` (dense Q4_K_M): default for code-heavy, careful editing work.
   ~57-65 tok/s decode with MTP spec-decode.
-- `qwen3.6-35b-a3b` (MoE, I-Compact): throughput and long-context work.
+- `muse-glimmer-30b` (Muse MoE, I-Compact): throughput and long-context work.
   ~145 tok/s decode, ~2.5x faster than the 27B at EQUAL quality (both 18/20 on
   the house battery, same failures). Prefer it when output volume dominates.
 - Only ONE model fits in 24 GB. Switching models (including any small/fast
   model that differs from the active one) forces a full reload from disk -
-  up to minutes for the 35B. One model per session; do not ping-pong.
+  up to minutes for Muse. One model per session; do not ping-pong.
 - Idle TTL is 900 s: after 15 min unused the model unloads and the next call
   pays a cold load.
 
@@ -48,13 +48,13 @@ were measured in /root/benchmark_models (2026-07-11 tuning pass).
 
 ## Serving limits (owner: /root/llama-swap/config.yaml)
 
-- Context (raised 2026-07-12; both GGUFs trained for 262144): 27B serves
-  -c 98304, 35B serves -c 131072 (its hybrid attention makes big KV cheap;
+- Context (raised 2026-07-12; both GGUFs trained for 262144): Qwen 27B serves
+  -c 98304, Muse serves -c 131072 (its hybrid attention makes big KV cheap;
   the 27B at 128k was too close to the VRAM ceiling). KV q8_0. The shim 400s
   when a prompt overflows the per-model window (QWEN_CTX_MAP) - do not
-  silently retry with a bigger number; trim, or route big jobs to the 35B.
-- bebop exports CLAUDE_CODE_MAX_CONTEXT_TOKENS (qwen 98304, qwen-big/auto
-  131072), so Claude Code auto-compacts before the shim's 400. A bebop
+  silently retry with a bigger number; trim, or route big jobs to Muse.
+- bebop exports CLAUDE_CODE_MAX_CONTEXT_TOKENS (qwen 98304, muse/auto 131072;
+  deprecated qwen-big/qwen35 aliases also 131072), so Claude Code auto-compacts before the shim's 400. A bebop
   session that still hits the 400 means the env is missing (stale shell -
   re-source bebop.sh). A fresh bebop session's fixed overhead is ~29k tokens.
 - Output ceiling: --n-predict 16384 server-side; shim QWEN_MAX_OUTPUT 16384;

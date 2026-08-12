@@ -48,7 +48,10 @@ esac
 # 5. settings.local.json valid JSON, 7 new-path entries, 0 old
 SETTINGS=/root/.claude/settings.local.json
 assert "5a. settings.local.json parses as JSON" python3 -c "import json,sys; json.load(open('$SETTINGS'))"
-assert_eq "5b. new-path entries == 7" "7" "$(grep -c "$NEW" "$SETTINGS")"
+# 5b. The rename left >= 7 new-path entries; the allowlist legitimately grows as new
+#     gpu_rtx_3090 commands are approved, so assert the floor, not a frozen snapshot count.
+new_entries=$(grep -c "$NEW" "$SETTINGS")
+if [ "$new_entries" -ge 7 ]; then ok "5b. new-path entries >= 7 (have $new_entries)"; else no "5b. new-path entries < 7 (have $new_entries)"; fi
 assert_eq "5c. old-path entries == 0" "0" "$(grep -c "$OLD" "$SETTINGS")"
 
 # 6. repo-copy unit ExecStop path is the new path
@@ -89,6 +92,20 @@ else
   ok "10. shellcheck not installed — skipped"
 fi
 
+echo "== bebop Muse routing invariants =="
+BEBOP="$REPO/bebop.sh"
+assert "Muse canonical route -> muse-glimmer-30b" grep -Eq '^    \[muse\]=muse-glimmer-30b([[:space:]]|$)' "$BEBOP"
+assert "deprecated qwen-big alias -> Muse" grep -Eq '^    \[qwen-big\]=muse-glimmer-30b([[:space:]]|$)' "$BEBOP"
+assert "deprecated qwen35 alias -> Muse" grep -Eq '^    \[qwen35\]=muse-glimmer-30b([[:space:]]|$)' "$BEBOP"
+assert "Muse context is 131072" grep -Eq '^    \[muse\]=131072([[:space:]]|$)' "$BEBOP"
+assert "agent-pack default is Muse" grep -q 'AGENTPACK_LOCAL_MODEL="${AGENTPACK_LOCAL_MODEL:-muse-glimmer-30b}"' "$BEBOP"
+assert "team-local default is Muse" grep -q 'AGENTPACK_LOCAL_MODEL:-muse-glimmer-30b' "$BEBOP"
+assert "Muse thinking route is rejected" grep -q '\[ "$model" = muse-glimmer-30b \]' "$BEBOP"
+assert_eq "Muse think is not advertised" "0" "$(grep -Eci 'bebop (muse|qwen-big|qwen35)-think' "$BEBOP")"
+assert "true Qwen 27B route unchanged" grep -Eq '^    \[qwen\]=qwen3\.6-27b([[:space:]]|$)' "$BEBOP"
+assert "true Qwen coder route unchanged" grep -Eq '^    \[coder\]=qwen3-coder-30b-a3b([[:space:]]|$)' "$BEBOP"
+assert_eq "retired 35B backend has no live mapping" "0" "$(grep -Ec '^    \[[^]]+\]=qwen3\.6-35b-a3b([[:space:]]|$)' "$BEBOP")"
+
 # 11. gpu-status.sh runs at the new path without a path/source error.
 #     GPU may be absent in CI, so we only fail on 'No such file' / source failures,
 #     not on a graceful GPU-missing exit.
@@ -103,10 +120,13 @@ echo "== Reference hygiene (B6 + global sweep) =="
 
 # 12. Global sweep excluding historical caches and the rename guard files
 #     themselves (this harness + the CI workflow legitimately name the old path
-#     in order to detect it).
+#     in order to detect it). `.wiggum/` is the spec-driven loop's bookkeeping
+#     (proof captures, verdicts, run logs) — it quotes this harness's own output
+#     verbatim, including the "no live <OLD>" PASS line, so it is a cache, not a
+#     live reference; excluded like tasks/ and .claude/projects/.
 sweep=$(grep -rn "$OLD" /root \
           --exclude-dir=.git --exclude-dir=file-history --exclude-dir=.vscode-server \
-          --exclude-dir=tasks \
+          --exclude-dir=tasks --exclude-dir=.wiggum \
           2>/dev/null \
         | grep -v '/.claude/history.jsonl' \
         | grep -v '/.bash_history' \
@@ -154,6 +174,42 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
 else
   ok "16. gh unavailable/unauth — remote checks skipped"
   ok "17. gh unavailable/unauth — redirect check skipped"
+fi
+
+echo "== agent-pack fences (roadmap 14.1, Phase 9) =="
+# 18. The agent pack's own invariant guard (session/role/permission fences). Its script
+#     lives beside the pack; run it if present and fold its exit into one assertion here so
+#     a broken fence (bad skill name, Skill leaking past `spec`, a dangling profile link,
+#     gridctl resurrected, an unfenced entrypoint) fails this binding suite too.
+AGENTPACK_TESTS="${AGENTPACK_TESTS:-/root/agent-pack/tests/test_agentpack.sh}"
+if [ -f "$AGENTPACK_TESTS" ]; then
+  if bash "$AGENTPACK_TESTS" >/tmp/agentpack-fences.$$.log 2>&1; then
+    ok "18. agent-pack fences green ($(grep -oE 'PASS: [0-9]+' /tmp/agentpack-fences.$$.log | tail -1))"
+  else
+    no "18. agent-pack fences FAILED — see below"
+    sed 's/^/       /' /tmp/agentpack-fences.$$.log
+  fi
+  rm -f /tmp/agentpack-fences.$$.log
+else
+  ok "18. agent-pack tests absent ($AGENTPACK_TESTS) — skipped"
+fi
+
+echo "== governed-fleet invariants (roadmap 15.1, Phase 12) =="
+# 19. The 15.1 governed-fleet invariant guard (compose reuses live organs / port band /
+#     append-only audit / forbidden-key filter / recall provenance / card≠approval / config
+#     drift / Wiggum unmodified). Its script lives in the WFO repo; run it if present and fold
+#     its exit into one assertion so a broken governed invariant fails this binding suite too.
+GOVERNED_FLEET_TESTS="${GOVERNED_FLEET_TESTS:-/root/workflow_orchestration/tests/test_governed_fleet.sh}"
+if [ -f "$GOVERNED_FLEET_TESTS" ]; then
+  if bash "$GOVERNED_FLEET_TESTS" >/tmp/governed-fleet.$$.log 2>&1; then
+    ok "19. governed-fleet invariants green ($(grep -oE 'PASS: [0-9]+' /tmp/governed-fleet.$$.log | tail -1))"
+  else
+    no "19. governed-fleet invariants FAILED — see below"
+    sed 's/^/       /' /tmp/governed-fleet.$$.log
+  fi
+  rm -f /tmp/governed-fleet.$$.log
+else
+  ok "19. governed-fleet tests absent ($GOVERNED_FLEET_TESTS) — skipped"
 fi
 
 echo

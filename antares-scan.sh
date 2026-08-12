@@ -3,7 +3,7 @@
 # it flag likely security issues, ONE FILE AT A TIME (the model's -c 8192 context and
 # text-only, no-tools nature means it cannot crawl a tree itself — this wrapper feeds
 # it each file). A 1B is a cheap FIRST-PASS smell test only: it misses a lot. For real
-# review use `bebop qwen-big` / gpt-5 / a proper SAST tool. See antares() in bebop.sh.
+# review use `bebop muse` / gpt-5 / a proper SAST tool. See antares() in bebop.sh.
 #
 # Usage:
 #   antares-scan.sh <folder> [--ext "py,js,ts,go,sh"] [--max-bytes 12000]

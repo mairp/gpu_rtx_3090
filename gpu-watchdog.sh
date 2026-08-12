@@ -16,7 +16,7 @@
 # H1 (roadmap 12.1 v4): it ALSO detects a quieter failure the device-health checks
 # miss — CPU-fallback / stale-CUDA. After a bus re-enumeration the container's CUDA
 # handles go stale and llama.cpp silently serves on CPU (GPU reads healthy, VRAM
-# ~1 MiB, 35B MoE ~13 tok/s). Predicate: llama-swap reports a model 'ready' AND
+# ~1 MiB, Muse MoE ~13 tok/s). Predicate: llama-swap reports a model 'ready' AND
 # VRAM below the floor (or no llama-server compute app) => degraded reason=cpu-fallback.
 # Unlike a wedge, the sanctioned fix is REVERSIBLE — a one-shot
 # `docker compose up -d --force-recreate` (re-injects the nvidia device → fresh CUDA

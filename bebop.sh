@@ -9,18 +9,18 @@
 #   bebop compass    -> same, explicit
 # Local models on the RTX 3090 (fully local via llama-swap; one loads at a time):
 #   bebop qwen       -> Qwen3.6-27B   (dense Q4_K_M, fast, no thinking)
-#   bebop qwen-big   -> Qwen3.6-35B-A3B  (MoE, larger)          alias: qwen35
+#   bebop muse       -> Muse Glimmer 30B (muse-glimmer-30b, MoE) deprecated aliases: qwen-big, qwen35
 #   bebop coder      -> Qwen3-Coder-30B-A3B-Instruct  (coding specialist, -c 65536)
-#   bebop auto       -> qwen-auto (LiteLLM picks: reasoning->gpt-5, coding->coder, big->35B, else sticky local)
+#   bebop auto       -> qwen-auto (LiteLLM picks: reasoning->gpt-5, coding->coder, big->Muse, else sticky local)
 # Cloud models on Compass STAGE (NOT llama-swap — via the shim's OPENAI_MODELS path):
 #   bebop gpt        -> Compass gpt-5.5      (cloud reasoning model; alias: gpt-5.5)
 #   bebop sol        -> Compass gpt-5.6-sol  (cloud reasoning model; alias: gpt-5.6-sol)
 #   bebop qwen-fp4   -> Qwen3.6-27B NVFP4  (only after Step 6 promotion; else falls back to 27B)
-#   add "-think" for the reasoning variant, e.g.  bebop qwen-think / bebop qwen-big-think
+#   add "-think" for a supported reasoning variant, e.g.  bebop qwen-think
 #
-# bebop v3 — the frontier-fading agent TREE (roadmap 12.1; opus plans, qwen executes):
+# bebop v3 — the frontier-fading agent TREE (roadmap 12.1; opus plans, Muse executes):
 #   bebop team [args...]        -> orchestrator (opus-4.8) + agent pack loaded; plan-first
-#   bebop team-local [args...]  -> same tree, orchestrator = qwen35 (the destination config)
+#   bebop team-local [args...]  -> same tree, orchestrator = Muse (the destination config)
 #   bebop ask <role> "q"        -> headless READ-ONLY leaf, no orchestrator hop (S1b)
 #                                  roles: investigator (fleet/AIOps), librarian (recall/docs)
 #   bebop ai-ops [args...]      -> the DIRECTOR entrypoint (Phase 4): main-thread ai-ops role,
@@ -43,10 +43,11 @@ bebop() {
   # NOT apply to them; they're just routed through the shim's Anthropic<->OpenAI translator.
   local -A models=(
     [qwen]=qwen3.6-27b
-    [qwen-big]=qwen3.6-35b-a3b
-    [qwen35]=qwen3.6-35b-a3b
+    [muse]=muse-glimmer-30b      # canonical Muse route
+    [qwen-big]=muse-glimmer-30b  # deprecated alias -> Muse
+    [qwen35]=muse-glimmer-30b    # deprecated alias -> Muse
     [coder]=qwen3-coder-30b-a3b  # coding-specialist MoE (roadmap 11.1); served -c 65536
-    [auto]=qwen-auto           # LiteLLM auto-router: reasoning->gpt-5, coding->coder, big->35b, else sticky
+    [auto]=qwen-auto           # LiteLLM auto-router: reasoning->gpt-5, coding->coder, big->Muse, else sticky
     [gpt]=gpt-5.5              # cloud: Compass STAGE gpt-5.5 via shim OPENAI_MODELS (NOT llama-swap)
     [gpt-5.5]=gpt-5.5         # explicit-name alias for the same
     [sol]=gpt-5.6-sol         # cloud: Compass STAGE gpt-5.6-sol via shim OPENAI_MODELS (NOT llama-swap)
@@ -56,12 +57,13 @@ bebop() {
   # Real served context per backend (llama-swap `-c`, raised 2026-07-12). Claude Code
   # honors CLAUDE_CODE_MAX_CONTEXT_TOKENS for non-claude-* models: telling it the true
   # window makes it AUTO-COMPACT before the shim's overflow 400 — frontier behavior
-  # instead of "prompt exceeds context, start a new session". auto uses the 35B window
-  # because the qwen-auto router sends every big job to the 35B.
+  # instead of "prompt exceeds context, start a new session". auto uses the Muse window
+  # because the qwen-auto router sends every big job to Muse.
   local -A ctxs=(
     [qwen]=98304
-    [qwen-big]=131072
-    [qwen35]=131072
+    [muse]=131072
+    [qwen-big]=131072           # deprecated alias -> Muse
+    [qwen35]=131072             # deprecated alias -> Muse
     [coder]=65536              # matches llama-swap `-c 65536` for the coder (VRAM headroom)
     [auto]=131072
     [gpt]=200000              # gpt-5.5: shim QWEN_CTX_MAP entry gpt-5.5:200000 (spec 002 fix) -> match it
@@ -94,13 +96,17 @@ bebop() {
 
   local model=${models[$sel]}
   if [ -z "$model" ]; then
-    echo "bebop: unknown backend '$sel' (try: compass, ${!models[*]}, or append -think)" >&2
+    echo "bebop: unknown backend '$sel' (try: compass, ${!models[*]}, or append -think where supported)" >&2
+    return 2
+  fi
+  if [ -n "$think" ] && [ "$model" = muse-glimmer-30b ]; then
+    echo "bebop: Muse thinking is not supported by this route; use 'bebop muse'" >&2
     return 2
   fi
 
   # ANTHROPIC_SMALL_FAST_MODEL is deliberately the SAME model as the main one:
   # llama-swap holds one model in 24 GB, so background subagent calls to any
-  # OTHER local model would force a full disk reload each way (35B<->27B swap
+  # OTHER local model would force a full disk reload each way (Muse<->27B swap
   # thrash, minutes per switch). Same model = zero swaps; the "cost" of running
   # a title-gen on the big model is noise next to a single reload.
   # MAX_THINKING_TOKENS makes Claude Code request thinking; the shim auto-detects it
@@ -124,10 +130,10 @@ bebop() {
 # ============================================================================
 # bebop v3 — the frontier-fading agent tree (roadmap 12.1, Phase 2). ADDITIVE:
 # the single-model entrypoints above are untouched. These three launch Claude
-# Code on the shim with the agent-pack loaded (opus plans, qwen executes).
+# Code on the shim with the agent-pack loaded (opus plans, Muse executes).
 #
 #   bebop team [claude args...]        interactive/headless orchestrator (opus-4.8)
-#   bebop team-local [claude args...]  same tree, orchestrator = qwen35 (the goal config)
+#   bebop team-local [claude args...]  same tree, orchestrator = Muse (the goal config)
 #   bebop ask <role> "question"        headless read-only leaf, no orchestrator hop (S1b)
 #
 # The agent pack (roles, contracts, escalation, config) lives in $AGENTPACK_HOME
@@ -137,6 +143,10 @@ bebop() {
 # role .md files stay the single source of truth. Config lives in agentpack.conf.
 # ============================================================================
 AGENTPACK_HOME="${AGENTPACK_HOME:-/root/agent-pack}"
+# Canonical local default for every agent-pack resolution launched through bebop. Export it
+# before agentops reads agentpack.conf so local workers, directors, and proposers all use Muse.
+AGENTPACK_LOCAL_MODEL="${AGENTPACK_LOCAL_MODEL:-muse-glimmer-30b}"
+export AGENTPACK_LOCAL_MODEL
 _bebop_agentops() { "$AGENTPACK_HOME/bin/agentops" "$@"; }
 
 # _bebop_profile_launch <profile> [claude args…] — the ONE session-fence launcher every
@@ -238,19 +248,19 @@ bebop_team() {
 unalias team-local 2>/dev/null
 bebop_team_local() {
   _bebop_team_prep || return 1
-  # The DESTINATION config: the orchestrator itself is the local model (thinking ON, per
-  # the 11.2 finding that thinking fixes multi-step planning). Available from day 1 so its
+  # The DESTINATION config: the orchestrator itself is Muse. Available from day 1 so its
   # success rate is measured alongside the opus orchestrator, not guessed. Frontier
-  # specialists (judge/architect/rescuer) still resolve to Compass via --agents.
-  local orch="${AGENTPACK_LOCAL_MODEL:-qwen3.6-35b-a3b}"
+  # specialists (judge/architect/rescuer) still resolve to Compass via --agents. Do not
+  # request extended thinking unless Muse support has been established separately.
+  local orch="${AGENTPACK_LOCAL_MODEL:-muse-glimmer-30b}"
   local ctx="${AGENTPACK_LOCAL_CTX:-131072}"
   [ "$_BT_MODE" = DEGRADED ] && echo "bebop team-local: MODE=DEGRADED — local orchestrator unavailable; using $orch anyway (GPU down: expect failure)" >&2
-  echo "bebop team-local: orchestrator=$orch (thinking on) — baseline measurement, failure is acceptable" >&2
+  echo "bebop team-local: orchestrator=$orch — baseline measurement, failure is acceptable" >&2
   # Phase 2: profile fence — same team profile as `bebop team` (CLAUDE_CONFIG_DIR + strict-MCP).
   local dir; dir="$(_bebop_profile_dir team)"
   CLAUDE_CONFIG_DIR="$dir" \
   ANTHROPIC_MODEL="$orch" ANTHROPIC_SMALL_FAST_MODEL="$orch" \
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" MAX_THINKING_TOKENS=8000 \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
   CLAUDE_CODE_MAX_OUTPUT_TOKENS=16000 \
   claude --model "$orch" --strict-mcp-config --mcp-config "$dir/mcp.json" \
     --agents "$_BT_AGENTS_JSON" \
@@ -264,7 +274,7 @@ bebop_team_local() {
 # dispatch investigator/executor via the Task tool, so the whole agent pack is injected
 # via --agents (same JSON as `bebop team`) and there is NO plan-mode lock. The session is
 # fenced to profiles/ai-ops/ (7 ops skills, empty mcp.json) via CLAUDE_CONFIG_DIR +
-# --strict-mcp-config. Model resolves by ops affinity (LOCAL -> qwen35; DEGRADED -> opus).
+# --strict-mcp-config. Model resolves by ops affinity (LOCAL -> Muse; DEGRADED -> opus).
 unalias ai-ops 2>/dev/null
 bebop_ai_ops() {
   if [ ! -x "$AGENTPACK_HOME/bin/agentops" ]; then
@@ -374,7 +384,7 @@ bebop_spec() {
 # what `WIGGUM_PROPOSER=bebop:wiggum-proposer` resolves to: Wiggum's proposer.sh sources this
 # file and calls `bebop wiggum-proposer -p "<phase prompt>" --dangerously-skip-permissions
 # --verbose [--output-format stream-json]`. It runs a SINGLE model (executor's ops-affinity
-# model: LOCAL -> qwen35; DEGRADED -> opus) fenced to profiles/wiggum-proposer/ — an executor
+# model: LOCAL -> Muse; DEGRADED -> opus) fenced to profiles/wiggum-proposer/ — an executor
 # toolbelt (Read/Grep/Glob/Edit/Write/Bash), NO speckit-* skills (that lives in the `spec`
 # profile), and NO MCP (strict-MCP + empty mcp.json).
 #
