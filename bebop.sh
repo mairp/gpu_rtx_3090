@@ -72,10 +72,15 @@ bebop() {
     [nemotron]=131072          # matches llama-swap `-c 131072` for Nemotron 3.5 Lightning
     [nemo]=131072              # short alias -> same window
     [auto]=131072
-    [gpt]=200000              # gpt-5.5: shim QWEN_CTX_MAP entry gpt-5.5:200000 (spec 002 fix) -> match it
-    [gpt-5.5]=200000         # so Claude Code auto-compacts at the true 200k, not an artificial 98304 floor
-    [sol]=200000              # gpt-5.6-sol: shim QWEN_CTX_MAP entry gpt-5.6-sol:200000 (spec 002 fix) -> match it
-    [gpt-5.6-sol]=200000     # so Claude Code auto-compacts at the true 200k, not an artificial 98304 floor
+    # Both cloud routes were pinned to 200000 by the spec 002 fix, when the shim's
+    # QWEN_CTX_MAP said 200000 too. The shim has since been raised to 300000 for both
+    # (verified 2026-08-13 in cc-compass-shim's env), so these are now a deliberate
+    # CONSERVATIVE floor, not a mirror: Claude Code compacts before the shim would 400.
+    # Raise them only after the true Compass window for the model is confirmed.
+    [gpt]=200000              # gpt-5.5: shim maps 300000; hold CC at 200k (compact early, never overflow)
+    [gpt-5.5]=200000         # so Claude Code auto-compacts well inside the window, not at an artificial 98304 floor
+    [sol]=200000              # gpt-5.6-sol: shim maps 300000; same conservative floor
+    [gpt-5.6-sol]=200000     # so Claude Code auto-compacts well inside the window, not at an artificial 98304 floor
   )
   local sel=${1:-compass} think=
   # bebop v3 subcommands (Phase 2): the agent tree. Dispatch to their functions and
