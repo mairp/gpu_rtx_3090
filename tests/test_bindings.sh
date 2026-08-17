@@ -116,12 +116,46 @@ assert "compass route carries the [1m] window flag" \
 assert "team orchestrator carries the [1m] window flag" \
   grep -q 'AGENTPACK_ORCHESTRATOR_MODEL:-claude-opus-4\.8\[1m\]' "$BEBOP"
 # The output reserve is subtracted from the window whether a turn uses it or not.
-assert "local output reserve defaults to 8192" grep -q 'BEBOP_MAX_OUTPUT:-8192' "$BEBOP"
-assert "thinking route keeps a 16000 output reserve" grep -q 'BEBOP_MAX_OUTPUT:-16000' "$BEBOP"
-# Both single-model launch arms must read the computed reserve, not a literal. (The
-# agent-tree entrypoints keep their own 16000 — different scope, deliberately untouched.)
+# _bebop_max_output is the ONE source of truth; no entrypoint may hardcode a literal, and
+# none may leave it UNSET (unset is the worst case — Claude Code then falls back to the
+# model default, which the min(…,20000) clamp turns into a full 20000 of lost window).
+# 5 helper call sites: team-local, ai-ops, spec, wiggum-proposer, ask (bebop() uses
+# $maxout, which it computes from the same helper).
+assert "reserve helper exists" grep -q '^_bebop_max_output() {' "$BEBOP"
+assert_eq "no entrypoint hardcodes an output reserve" "0" \
+  "$(grep -Ec 'CLAUDE_CODE_MAX_OUTPUT_TOKENS=[0-9]+' "$BEBOP")"
 assert_eq "both single-model arms use the computed output reserve" "2" \
   "$(grep -Ec 'CLAUDE_CODE_MAX_OUTPUT_TOKENS="\$maxout"' "$BEBOP")"
+assert_eq "every agent-tree entrypoint sets a reserve via the helper" "5" \
+  "$(grep -Ec 'CLAUDE_CODE_MAX_OUTPUT_TOKENS="\$\(_bebop_max_output ' "$BEBOP")"
+assert_eq "every helper call passes the resolved model" "6" \
+  "$(grep -Ec '_bebop_max_output "\$(model|orch)"' "$BEBOP")"
+# Behavioural: source the file and exercise the helper directly. Sourcing only defines
+# functions (the entrypoints are never invoked), so this is safe in CI.
+# shellcheck source=/dev/null
+( . "$BEBOP" >/dev/null 2>&1
+  [ "$(_bebop_max_output qwen3.8-27b-q5)" = 8192 ] ) \
+  && ok "helper: local model reserves 8192" || no "helper: local model reserves 8192"
+# shellcheck source=/dev/null
+( . "$BEBOP" >/dev/null 2>&1
+  [ "$(_bebop_max_output qwen3.8-27b-q5 think)" = 16000 ] ) \
+  && ok "helper: thinking path reserves 16000" || no "helper: thinking path reserves 16000"
+# A frontier model runs on a 200k-1M window where the reserve is noise, so it keeps its
+# full generation budget — trimming it would risk truncating a long document for nothing.
+# shellcheck source=/dev/null
+( . "$BEBOP" >/dev/null 2>&1
+  [ "$(_bebop_max_output 'claude-opus-4.8[1m]')" = 32000 ] ) \
+  && ok "helper: frontier model keeps 32000" || no "helper: frontier model keeps 32000"
+# shellcheck source=/dev/null
+( . "$BEBOP" >/dev/null 2>&1
+  [ "$(BEBOP_MAX_OUTPUT=4096 _bebop_max_output 'claude-opus-4.8')" = 4096 ] ) \
+  && ok "helper: BEBOP_MAX_OUTPUT overrides everything" \
+  || no "helper: BEBOP_MAX_OUTPUT overrides everything"
+# Every entrypoint that declares a context window must also declare its reserve, or the
+# window silently loses 20000 to the default.
+assert_eq "context and reserve declarations are paired" \
+  "$(grep -Ec 'CLAUDE_CODE_MAX_CONTEXT_TOKENS=(\"|\$)' "$BEBOP")" \
+  "$(grep -Ec 'CLAUDE_CODE_MAX_OUTPUT_TOKENS=(\"|\$)' "$BEBOP")"
 # q5 is VRAM-capped at -c 98304; the declared window must not drift above the served one.
 assert "qwen window matches the served -c 98304" grep -Eq '^    \[qwen\]=98304([[:space:]]|$)' "$BEBOP"
 # Profile fence on the local routes.

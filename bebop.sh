@@ -18,7 +18,11 @@
 # Per-session overrides:
 #   BEBOP_COMPASS_MODEL=claude-opus-4.8   drop the compass route back to 200k (cheaper)
 #   BEBOP_CTX=<n>                         override the local route's declared window
-#   BEBOP_MAX_OUTPUT=<n>                  output reserve (default 8192, 16000 on -think)
+#   BEBOP_MAX_OUTPUT=<n>                  output reserve, fleet-wide: the single-model
+#                                         routes AND the agent tree (team-local/ai-ops/
+#                                         spec/wiggum-proposer/ask) all read
+#                                         _bebop_max_output — local 8192, -think 16000,
+#                                         frontier (claude-*) keeps its full 32000
 #   BEBOP_NO_COMPACT=1                    DISABLE_COMPACT: never compact; BLOCKS at the
 #                                         ceiling instead, losing the session. See below.
 #   BEBOP_NO_FENCE=1                      local routes: skip the `solo` profile fence
@@ -56,6 +60,32 @@
 #
 # Version-controlled in github.com/mairp/gpu_rtx_3090 (bebop.sh); ~/.bashrc sources this
 # file, so edit HERE and commit — not in .bashrc.
+
+# _bebop_max_output <model> [think] — the CLAUDE_CODE_MAX_OUTPUT_TOKENS every entrypoint
+# uses. ONE source of truth, because this value is not really an output cap: auto-compact
+# fires at `window - min(max_output, 20000) - 13000`, so the reserve is subtracted from
+# the window on every turn whether or not the turn generates anything. Leaving it UNSET
+# is the worst case, not the safe one — `ZZt()` then falls back to the model's default
+# (32000 for the local backends), which the min() clamps to a full 20000 of lost window.
+#
+# The trim is worth it ONLY where the window is small. Losing 20000 costs 15% of a local
+# 131072 window but 10% of a frontier 200000 and 2% of 1000000 — so frontier models keep
+# their full 32000 generation budget rather than risk truncating a long document (this
+# matters concretely: `bebop spec` resolves to opus in DEGRADED mode and writes specs).
+# For the local backends 8192 is ~600 lines of code in one turn, and the shim clamps
+# output independently (`allowed = ctx - est_in - margin`), so this only bounds a single
+# turn's generation. The thinking path keeps 16000 — MAX_THINKING_TOKENS=8000 has to fit
+# inside the output budget alongside the answer.
+# BEBOP_MAX_OUTPUT overrides all of it, everywhere.
+_bebop_max_output() {
+  local model="${1:-}" think="${2:-}"
+  if [ -n "${BEBOP_MAX_OUTPUT:-}" ]; then printf '%s' "$BEBOP_MAX_OUTPUT"; return; fi
+  case "$model" in
+    claude-*) printf '%s' 32000; return ;;   # frontier: reserve is noise, keep the budget
+  esac
+  if [ "$think" = think ]; then printf '%s' 16000; else printf '%s' 8192; fi
+}
+
 unalias bebop 2>/dev/null   # drop any stale alias so the function below always parses on re-source
 bebop() {
   # alias -> backend model name. Add a line here to expose a new model.
@@ -184,8 +214,7 @@ bebop() {
   # to fit inside the output budget alongside the answer.
   # Override any of these per session: BEBOP_CTX, BEBOP_MAX_OUTPUT, BEBOP_NO_COMPACT.
   local ctx=${BEBOP_CTX:-${ctxs[$sel]:-98304}}
-  local maxout=${BEBOP_MAX_OUTPUT:-8192}
-  [ -n "$think" ] && maxout=${BEBOP_MAX_OUTPUT:-16000}
+  local maxout; maxout="$(_bebop_max_output "$model" ${think:+think})"
 
   # BEBOP_NO_COMPACT=1 -> DISABLE_COMPACT, which turns auto-compact off entirely
   # (`vI()` returns false) AND promotes CLAUDE_CODE_MAX_CONTEXT_TOKENS to the
@@ -378,7 +407,7 @@ bebop_team_local() {
   CLAUDE_CONFIG_DIR="$dir" \
   ANTHROPIC_MODEL="$orch" ANTHROPIC_SMALL_FAST_MODEL="$orch" \
   CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
-  CLAUDE_CODE_MAX_OUTPUT_TOKENS=16000 \
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS="$(_bebop_max_output "$orch")" \
   claude --model "$orch" --strict-mcp-config --mcp-config "$dir/mcp.json" \
     --agents "$_BT_AGENTS_JSON" \
     --append-system-prompt "$_BT_ORCH_PROMPT" "$@"
@@ -448,6 +477,10 @@ bebop_ai_ops() {
   export ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy
   export ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model"
   export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${AGENTPACK_LOCAL_CTX:-131072}"
+  # Was UNSET here, which is the worst case: Claude Code fell back to the model
+  # default and the min() clamp cost a full 20000 of the 131072 window on every turn.
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS="$(_bebop_max_output "$model")"
+  export CLAUDE_CODE_MAX_OUTPUT_TOKENS
   export AGENTPACK_HOME
   # Profile fence: CLAUDE_CONFIG_DIR re-homes the config layer to profiles/ai-ops/ (its 7
   # ops skills + settings.json OTel+kanban hooks); strict-MCP + the profile's empty mcp.json
@@ -486,6 +519,10 @@ bebop_spec() {
   export ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy
   export ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model"
   export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${AGENTPACK_LOCAL_CTX:-131072}"
+  # Was UNSET here, which is the worst case: Claude Code fell back to the model
+  # default and the min() clamp cost a full 20000 of the 131072 window on every turn.
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS="$(_bebop_max_output "$model")"
+  export CLAUDE_CODE_MAX_OUTPUT_TOKENS
   export AGENTPACK_HOME
   # Profile fence: CLAUDE_CONFIG_DIR re-homes the config layer to profiles/spec/ (its ten
   # speckit-* skills + settings.json OTel+kanban hooks); strict-MCP + the profile's empty
@@ -540,6 +577,10 @@ bebop_wiggum_proposer() {
   export ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy
   export ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model"
   export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${AGENTPACK_LOCAL_CTX:-131072}"
+  # Was UNSET here, which is the worst case: Claude Code fell back to the model
+  # default and the min() clamp cost a full 20000 of the 131072 window on every turn.
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS="$(_bebop_max_output "$model")"
+  export CLAUDE_CODE_MAX_OUTPUT_TOKENS
   export AGENTPACK_HOME
   # Profile fence: CLAUDE_CONFIG_DIR re-homes the config layer to profiles/wiggum-proposer/
   # (empty skills/ — no speckit-*, its settings.json OTel+kanban hooks); strict-MCP + the
@@ -730,6 +771,10 @@ bebop_ask() {
   export ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy
   export ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model"
   export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${AGENTPACK_LOCAL_CTX:-131072}"
+  # Was UNSET here, which is the worst case: Claude Code fell back to the model
+  # default and the min() clamp cost a full 20000 of the 131072 window on every turn.
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS="$(_bebop_max_output "$model")"
+  export CLAUDE_CODE_MAX_OUTPUT_TOKENS
   # Phase 2: profile fence. Map the read-only role to its profile (investigator -> ai-ops,
   # librarian -> librarian) and route through it via CLAUDE_CONFIG_DIR + --strict-mcp-config
   # with the profile's empty mcp.json, so no MCP schemas load into the ask session.
