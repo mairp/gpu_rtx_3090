@@ -102,9 +102,40 @@ assert "agent-pack default is Muse" grep -q 'AGENTPACK_LOCAL_MODEL="${AGENTPACK_
 assert "team-local default is Muse" grep -q 'AGENTPACK_LOCAL_MODEL:-muse-glimmer-30b' "$BEBOP"
 assert "Muse thinking route is rejected" grep -q '\[ "$model" = muse-glimmer-30b \]' "$BEBOP"
 assert_eq "Muse think is not advertised" "0" "$(grep -Eci 'bebop (muse|qwen-big|qwen35)-think' "$BEBOP")"
-assert "true Qwen 27B route unchanged" grep -Eq '^    \[qwen\]=qwen3\.6-27b([[:space:]]|$)' "$BEBOP"
-assert "true Qwen coder route unchanged" grep -Eq '^    \[coder\]=qwen3-coder-30b-a3b([[:space:]]|$)' "$BEBOP"
+assert "true Qwen route -> qwen3.8-27b-q5" grep -Eq '^    \[qwen\]=qwen3\.8-27b-q5([[:space:]]|$)' "$BEBOP"
+assert_eq "uninstalled qwen3.6-27b has no live mapping" "0" "$(grep -Ec '^    \[[^]]+\]=qwen3\.6-27b([[:space:]]|$)' "$BEBOP")"
+assert_eq "uninstalled coder backend has no live mapping" "0" "$(grep -Ec '^    \[coder\]=' "$BEBOP")"
 assert_eq "retired 35B backend has no live mapping" "0" "$(grep -Ec '^    \[[^]]+\]=qwen3\.6-35b-a3b([[:space:]]|$)' "$BEBOP")"
+
+echo "== bebop context-window invariants (2026-08-17) =="
+# CLAUDE_CODE_MAX_CONTEXT_TOKENS is ignored by Claude Code for `claude-*` models, so
+# the compass route MUST carry the [1m] name flag or it silently falls back to the
+# 200000 default and compacts at 167000 (Compass STAGE measures at 1,000,000).
+assert "compass route carries the [1m] window flag" \
+  grep -q 'BEBOP_COMPASS_MODEL:-claude-opus-4\.8\[1m\]' "$BEBOP"
+assert "team orchestrator carries the [1m] window flag" \
+  grep -q 'AGENTPACK_ORCHESTRATOR_MODEL:-claude-opus-4\.8\[1m\]' "$BEBOP"
+# The output reserve is subtracted from the window whether a turn uses it or not.
+assert "local output reserve defaults to 8192" grep -q 'BEBOP_MAX_OUTPUT:-8192' "$BEBOP"
+assert "thinking route keeps a 16000 output reserve" grep -q 'BEBOP_MAX_OUTPUT:-16000' "$BEBOP"
+# Both single-model launch arms must read the computed reserve, not a literal. (The
+# agent-tree entrypoints keep their own 16000 — different scope, deliberately untouched.)
+assert_eq "both single-model arms use the computed output reserve" "2" \
+  "$(grep -Ec 'CLAUDE_CODE_MAX_OUTPUT_TOKENS="\$maxout"' "$BEBOP")"
+# q5 is VRAM-capped at -c 98304; the declared window must not drift above the served one.
+assert "qwen window matches the served -c 98304" grep -Eq '^    \[qwen\]=98304([[:space:]]|$)' "$BEBOP"
+# Profile fence on the local routes.
+assert "local routes fence to the solo profile" grep -q '_bebop_profile_dir solo' "$BEBOP"
+assert "fence is opt-out via BEBOP_NO_FENCE" grep -q 'BEBOP_NO_FENCE:-0' "$BEBOP"
+assert "compass fence is opt-in via BEBOP_FENCE" grep -q 'BEBOP_FENCE:-0' "$BEBOP"
+SOLO="${AGENTPACK_HOME:-/root/agent-pack}/profiles/solo"
+assert "solo profile exists" test -f "$SOLO/mcp.json"
+assert "solo profile keeps the qmd MCP server" grep -q '"qmd"' "$SOLO/mcp.json"
+assert_eq "solo profile drops the pvectl MCP server" "0" "$(grep -c 'pvectl' "$SOLO/mcp.json")"
+# Load-bearing: CLAUDE_CONFIG_DIR displaces the whole user layer, so without this
+# symlink a fenced session loses its history AND projects/-root/memory/MEMORY.md.
+assert "solo profile symlinks projects/ back to the real config dir" test -L "$SOLO/projects"
+assert "solo projects symlink resolves to the auto-memory dir" test -f "$SOLO/projects/-root/memory/MEMORY.md"
 
 # 11. gpu-status.sh runs at the new path without a path/source error.
 #     GPU may be absent in CI, so we only fail on 'No such file' / source failures,

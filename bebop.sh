@@ -5,19 +5,40 @@
 # bebop: Claude Code via cc-compass-shim (127.0.0.1:8088). First arg picks a backend;
 # everything after passes through to `claude`, e.g.  bebop qwen -p "hi".
 #
-#   bebop            -> Compass (STAGE), default model claude-opus-4.8   (no arg = compass)
+#   bebop            -> Compass (STAGE), default model claude-opus-4.8[1m]  (no arg = compass)
 #   bebop compass    -> same, explicit
+#
+# CONTEXT KNOBS (2026-08-17). Auto-compact fires at
+#     window - min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, 20000) - 13000
+# and a fresh session in /root already costs ~35k (system prompt + tool/MCP schemas
+# + skills + memory), so working room = threshold - 35k. Measured windows:
+#     bebop (compass)          1000000 -> compacts at 967000   (was 200000 -> 167000)
+#     bebop muse|nemotron|auto  131072 -> compacts at 109880
+#     bebop qwen (q5)            98304 -> compacts at  77112   (VRAM-capped, cannot grow)
+# Per-session overrides:
+#   BEBOP_COMPASS_MODEL=claude-opus-4.8   drop the compass route back to 200k (cheaper)
+#   BEBOP_CTX=<n>                         override the local route's declared window
+#   BEBOP_MAX_OUTPUT=<n>                  output reserve (default 8192, 16000 on -think)
+#   BEBOP_NO_COMPACT=1                    DISABLE_COMPACT: never compact; BLOCKS at the
+#                                         ceiling instead, losing the session. See below.
+#   BEBOP_NO_FENCE=1                      local routes: skip the `solo` profile fence
+#   BEBOP_FENCE=1                         compass route: apply it (off there by default)
+#
+# The local routes are fenced to the agent-pack `solo` profile (CLAUDE_CONFIG_DIR +
+# --strict-mcp-config): 7 fleet skills instead of ~30, qmd MCP but no pvectl, and
+# projects/ symlinked back to /root/.claude/projects so session history + the
+# auto-memory dir survive. Cuts the fixed floor, which is re-paid after every compaction.
 # Local models on the RTX 3090 (fully local via llama-swap; one loads at a time):
-#   bebop qwen       -> Qwen3.6-27B   (dense Q4_K_M, fast, no thinking)
+#   bebop qwen       -> Qwen3.8-27B (UD-Q5_K_XL, dense qwen35, -c 98304; fast base, no thinking)
+#   bebop qwen-think -> same weights, THINKING path (shim flips enable_thinking=true) — the
+#                       best-performer reasoning route; qwen3.8-27b-q5 is a thinking model
 #   bebop muse       -> Muse Glimmer 30B (muse-glimmer-30b, MoE) deprecated aliases: qwen-big, qwen35
-#   bebop coder      -> Qwen3-Coder-30B-A3B-Instruct  (coding specialist, -c 65536)
 #   bebop nemotron   -> NVIDIA Nemotron 3.5 Lightning 30B-A3B (hybrid Mamba-2+MoE, -c 131072;
 #                       reasoning model — append -think for the thinking path)
-#   bebop auto       -> qwen-auto (LiteLLM picks: reasoning->gpt-5, coding->coder, big->Muse, else sticky local)
+#   bebop auto       -> qwen-auto (LiteLLM picks: reasoning->gpt-5, big->Muse, else sticky local qwen3.8-q5)
 # Cloud models on Compass STAGE (NOT llama-swap — via the shim's OPENAI_MODELS path):
 #   bebop gpt        -> Compass gpt-5.5      (cloud reasoning model; alias: gpt-5.5)
 #   bebop sol        -> Compass gpt-5.6-sol  (cloud reasoning model; alias: gpt-5.6-sol)
-#   bebop qwen-fp4   -> Qwen3.6-27B NVFP4  (only after Step 6 promotion; else falls back to 27B)
 #   add "-think" for a supported reasoning variant, e.g.  bebop qwen-think
 #
 # bebop v3 — the frontier-fading agent TREE (roadmap 12.1; opus plans, Muse executes):
@@ -44,19 +65,19 @@ bebop() {
   # LiteLLM), not llama-swap — the "one model at a time / swap-thrash" rationale below does
   # NOT apply to them; they're just routed through the shim's Anthropic<->OpenAI translator.
   local -A models=(
-    [qwen]=qwen3.6-27b
+    [qwen]=qwen3.8-27b-q5        # sole local dense 27B (Unsloth UD-Q5_K_XL, arch qwen35); -think for the thinking path
+    [qwen3.8]=qwen3.8-27b-q5     # explicit-name alias for the same
+    [q5]=qwen3.8-27b-q5          # short alias for the same
     [muse]=muse-glimmer-30b      # canonical Muse route
     [qwen-big]=muse-glimmer-30b  # deprecated alias -> Muse
     [qwen35]=muse-glimmer-30b    # deprecated alias -> Muse
-    [coder]=qwen3-coder-30b-a3b  # coding-specialist MoE (roadmap 11.1); served -c 65536
     [nemotron]=nemotron-lightning-30b  # NVIDIA Nemotron 3.5 Lightning 30B-A3B (hybrid Mamba-2+MoE)
     [nemo]=nemotron-lightning-30b      # short alias for the same
-    [auto]=qwen-auto           # LiteLLM auto-router: reasoning->gpt-5, coding->coder, big->Muse, else sticky
+    [auto]=qwen-auto           # LiteLLM auto-router: reasoning->gpt-5, big->Muse, else sticky local qwen3.8-q5
     [gpt]=gpt-5.5              # cloud: Compass STAGE gpt-5.5 via shim OPENAI_MODELS (NOT llama-swap)
     [gpt-5.5]=gpt-5.5         # explicit-name alias for the same
     [sol]=gpt-5.6-sol         # cloud: Compass STAGE gpt-5.6-sol via shim OPENAI_MODELS (NOT llama-swap)
     [gpt-5.6-sol]=gpt-5.6-sol # explicit-name alias for the same
-    # [qwen-fp4]=qwen3.6-27b-nvfp4
   )
   # Real served context per backend (llama-swap `-c`, raised 2026-07-12). Claude Code
   # honors CLAUDE_CODE_MAX_CONTEXT_TOKENS for non-claude-* models: telling it the true
@@ -64,11 +85,12 @@ bebop() {
   # instead of "prompt exceeds context, start a new session". auto uses the Muse window
   # because the qwen-auto router sends every big job to Muse.
   local -A ctxs=(
-    [qwen]=98304
+    [qwen]=98304               # matches llama-swap `-c 98304` for qwen3.8-27b-q5
+    [qwen3.8]=98304            # explicit-name alias -> same window
+    [q5]=98304                 # short alias -> same window
     [muse]=131072
     [qwen-big]=131072           # deprecated alias -> Muse
     [qwen35]=131072             # deprecated alias -> Muse
-    [coder]=65536              # matches llama-swap `-c 65536` for the coder (VRAM headroom)
     [nemotron]=131072          # matches llama-swap `-c 131072` for Nemotron 3.5 Lightning
     [nemo]=131072              # short alias -> same window
     [auto]=131072
@@ -100,8 +122,38 @@ bebop() {
   esac
 
   # Compass passthrough (default / explicit).
+  #
+  # The `[1m]` suffix is a Claude Code model-name flag, NOT part of the model id:
+  # `G4u()` in the CLI does `if (KE(e)) return 1e6`, where `KE(e)` is the regex
+  # /\[1m\]/i on the model name — so it forces the 1,000,000-token context window.
+  # This is the ONLY lever that works here: `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is
+  # ignored for any model whose name starts with `claude-` (G4u's last branch
+  # guards on `!startsWith("claude-")`), so the compass route was silently pinned
+  # to the 200000 default and auto-compacting at 167000.
+  #
+  # MEASURED 2026-08-17 against Compass STAGE via the shim: 999,078 prompt tokens
+  # accepted; 1,098,985 rejected with "prompt is too long: > 1000000 maximum".
+  # So 1M is the real backend window and the suffix matches it exactly. Auto-compact
+  # stays ENABLED and now fires at 967,000 (1e6 - 20000 output reserve - 13000 buffer).
+  #
+  # COST: a wide context is billed on every turn. Set BEBOP_COMPASS_MODEL to the
+  # bare `claude-opus-4.8` to go back to the 200k/167k behaviour for a cheap session.
+  #
+  # NOT fenced by default (unlike the local routes below): at 967000 the compass
+  # route has ~932k of working room, so trading away skills + MCP to reclaim ~10k of
+  # fixed floor is a bad deal here. BEBOP_FENCE=1 opts in to the solo profile anyway.
   if [ "$sel" = compass ]; then
-    ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy claude "$@"
+    local cfence=() cargs=()
+    if [ "${BEBOP_FENCE:-0}" = 1 ]; then
+      local cdir; cdir="$(_bebop_profile_dir solo)"
+      if [ -f "$cdir/mcp.json" ]; then
+        cfence=(CLAUDE_CONFIG_DIR="$cdir")
+        cargs=(--strict-mcp-config --mcp-config "$cdir/mcp.json")
+      fi
+    fi
+    env ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
+    ANTHROPIC_MODEL="${BEBOP_COMPASS_MODEL:-claude-opus-4.8[1m]}" \
+    "${cfence[@]}" claude "${cargs[@]}" "$@"
     return
   fi
 
@@ -122,19 +174,68 @@ bebop() {
   # a title-gen on the big model is noise next to a single reload.
   # MAX_THINKING_TOKENS makes Claude Code request thinking; the shim auto-detects it
   # and streams qwen's reasoning back as Anthropic thinking blocks (context-hungry).
-  local ctx=${ctxs[$sel]:-98304}
+  # Auto-compact fires at `window - min(max_output,20000) - 13000` (yQo/$ye in the
+  # CLI). The output reserve is subtracted from the window whether or not a turn
+  # ever uses it, so an oversized CLAUDE_CODE_MAX_OUTPUT_TOKENS is pure lost room.
+  # 16000 was costing 16000 tokens of headroom; 8192 buys 7808 of it back (on the
+  # 98304 route that is 34.3k -> 42.1k of usable working context, +23%). The shim
+  # clamps output anyway (`allowed = ctx - est_in - margin`), so this only bounds a
+  # single turn's generation. Thinking keeps 16000 — MAX_THINKING_TOKENS=8000 has
+  # to fit inside the output budget alongside the answer.
+  # Override any of these per session: BEBOP_CTX, BEBOP_MAX_OUTPUT, BEBOP_NO_COMPACT.
+  local ctx=${BEBOP_CTX:-${ctxs[$sel]:-98304}}
+  local maxout=${BEBOP_MAX_OUTPUT:-8192}
+  [ -n "$think" ] && maxout=${BEBOP_MAX_OUTPUT:-16000}
+
+  # BEBOP_NO_COMPACT=1 -> DISABLE_COMPACT, which turns auto-compact off entirely
+  # (`vI()` returns false) AND promotes CLAUDE_CODE_MAX_CONTEXT_TOKENS to the
+  # unclamped window (`z4u()` short-circuits FT). NOTE this buys no extra room on
+  # a local route: the ceiling there is VRAM, not a software pin. All it changes is
+  # what happens AT the ceiling — the turn is blocked instead of summarised, and the
+  # session is unrecoverable. Opt in only when you would rather lose the session
+  # than let it be compacted mid-task.
+  local nocompact=()
+  [ "${BEBOP_NO_COMPACT:-0}" = 1 ] && nocompact=(DISABLE_COMPACT=1)
+
+  # PROFILE FENCE on the local routes (2026-08-17). Same mechanism the agent-tree
+  # entrypoints use — CLAUDE_CONFIG_DIR + --strict-mcp-config — but pointed at the
+  # `solo` profile, which is built for a GENERAL interactive session rather than a
+  # scripted leaf, so it keeps what such a session actually needs:
+  #   * skills/    the 7 fleet skills only; drops dataviz, artifact-*, video-to-deck,
+  #                speckit-*, claude-api, … which a local coding driver never invokes
+  #   * mcp.json   keeps qmd (the shared brain); drops pvectl, whose tool schemas are
+  #                dead weight — proxmox-ops/proxmox-triage shell out to pvectl.sh
+  #   * projects/  SYMLINKED to /root/.claude/projects. This is load-bearing: without
+  #                it CLAUDE_CONFIG_DIR re-homes the whole user layer and the session
+  #                would lose its history AND projects/-root/memory/ (MEMORY.md).
+  #   * settings.json re-provides the OTel env + the qmd recall hook + kanban hooks.
+  # MEASURED on `bebop qwen` in /root: 32,645 -> 22,323 tokens of fixed floor at a
+  # full empty fence; the solo profile keeps qmd+7 skills and still lands well under
+  # baseline. The floor is re-paid after EVERY compaction, so this compounds.
+  # Local routes only: the compass route has ~932k of room, where trading skills for
+  # ~10k of floor is a bad deal. Opt in there with BEBOP_FENCE=1, out here with
+  # BEBOP_NO_FENCE=1.
+  local fence=()
+  if [ "${BEBOP_NO_FENCE:-0}" != 1 ]; then
+    local pdir; pdir="$(_bebop_profile_dir solo)"
+    if [ -f "$pdir/mcp.json" ]; then
+      fence=(CLAUDE_CONFIG_DIR="$pdir")
+      set -- --strict-mcp-config --mcp-config "$pdir/mcp.json" "$@"
+    fi
+  fi
+
   if [ -n "$think" ]; then
-    ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
-    ANTHROPIC_MODEL=$model ANTHROPIC_SMALL_FAST_MODEL=$model \
-    CLAUDE_CODE_MAX_CONTEXT_TOKENS=$ctx \
-    MAX_THINKING_TOKENS=8000 CLAUDE_CODE_MAX_OUTPUT_TOKENS=16000 \
-    claude "$@"
+    env ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
+    ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model" \
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
+    MAX_THINKING_TOKENS=8000 CLAUDE_CODE_MAX_OUTPUT_TOKENS="$maxout" \
+    "${fence[@]}" "${nocompact[@]}" claude "$@"
   else
-    ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
-    ANTHROPIC_MODEL=$model ANTHROPIC_SMALL_FAST_MODEL=$model \
-    CLAUDE_CODE_MAX_CONTEXT_TOKENS=$ctx \
-    CLAUDE_CODE_MAX_OUTPUT_TOKENS=16000 \
-    claude "$@"
+    env ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
+    ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model" \
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS="$maxout" \
+    "${fence[@]}" "${nocompact[@]}" claude "$@"
   fi
 }
 
@@ -238,7 +339,12 @@ _bebop_team_prep() {
 unalias team 2>/dev/null
 bebop_team() {
   _bebop_team_prep || return 1
-  local orch="${AGENTPACK_ORCHESTRATOR_MODEL:-claude-opus-4.8}"
+  # `[1m]` = the CLI's 1,000,000-token context flag (see the compass path above for
+  # why CLAUDE_CODE_MAX_CONTEXT_TOKENS cannot do this for a `claude-*` model).
+  # The orchestrator holds the whole plan + every leaf's report, so it is the single
+  # turn in the tree that most needs the window. Set AGENTPACK_ORCHESTRATOR_MODEL to
+  # the bare `claude-opus-4.8` to revert to 200k/compact-at-167k.
+  local orch="${AGENTPACK_ORCHESTRATOR_MODEL:-claude-opus-4.8[1m]}"
   [ "$_BT_MODE" = DEGRADED ] && echo "bebop team: MODE=DEGRADED (GPU down) — leafs on frontier by affinity" >&2
   # Parent = frontier planner on the shim. ANTHROPIC_SMALL_FAST_MODEL matches the parent
   # model so background/title calls don't force a local swap (S1 finding). The pack is
