@@ -86,6 +86,10 @@ _bebop_max_output() {
   if [ "$think" = think ]; then printf '%s' 16000; else printf '%s' 8192; fi
 }
 
+# Fenced interactive entrypoints explicitly select acceptEdits. Re-homing the user
+# config with CLAUDE_CONFIG_DIR otherwise lets Claude Code's classifier-driven `auto`
+# mode hard-deny ordinary work. acceptEdits preserves prompts for sensitive Bash/tools.
+# Caller flags occur later and therefore retain the ability to select another policy.
 unalias bebop 2>/dev/null   # drop any stale alias so the function below always parses on re-source
 bebop() {
   # alias -> backend model name. Add a line here to expose a new model.
@@ -183,7 +187,7 @@ bebop() {
     fi
     env ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
     ANTHROPIC_MODEL="${BEBOP_COMPASS_MODEL:-claude-opus-4.8[1m]}" \
-    "${cfence[@]}" claude "${cargs[@]}" "$@"
+    "${cfence[@]}" claude --permission-mode acceptEdits "${cargs[@]}" "$@"
     return
   fi
 
@@ -258,13 +262,13 @@ bebop() {
     ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model" \
     CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
     MAX_THINKING_TOKENS=8000 CLAUDE_CODE_MAX_OUTPUT_TOKENS="$maxout" \
-    "${fence[@]}" "${nocompact[@]}" claude "$@"
+    "${fence[@]}" "${nocompact[@]}" claude --permission-mode acceptEdits "$@"
   else
     env ANTHROPIC_BASE_URL=http://127.0.0.1:8088 ANTHROPIC_AUTH_TOKEN=dummy \
     ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model" \
     CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
     CLAUDE_CODE_MAX_OUTPUT_TOKENS="$maxout" \
-    "${fence[@]}" "${nocompact[@]}" claude "$@"
+    "${fence[@]}" "${nocompact[@]}" claude --permission-mode acceptEdits "$@"
   fi
 }
 
@@ -318,7 +322,7 @@ _bebop_profile_launch() {
   # settings.json re-provides the OTel env + kanban hooks; strict-MCP + mcp.json fence
   # the servers. Everything after is passed straight to claude.
   CLAUDE_CONFIG_DIR="$dir" \
-    claude --strict-mcp-config --mcp-config "$dir/mcp.json" "$@"
+    claude --permission-mode acceptEdits --strict-mcp-config --mcp-config "$dir/mcp.json" "$@"
 }
 
 # _bebop_profile_dir <profile> — echo the on-disk profile directory (holds skills/,
@@ -386,7 +390,7 @@ bebop_team() {
   local dir; dir="$(_bebop_profile_dir team)"
   CLAUDE_CONFIG_DIR="$dir" \
   ANTHROPIC_MODEL="$orch" ANTHROPIC_SMALL_FAST_MODEL="$orch" \
-  claude --model "$orch" --strict-mcp-config --mcp-config "$dir/mcp.json" \
+  claude --permission-mode acceptEdits --model "$orch" --strict-mcp-config --mcp-config "$dir/mcp.json" \
     --agents "$_BT_AGENTS_JSON" \
     --append-system-prompt "$_BT_ORCH_PROMPT" "$@"
 }
@@ -408,7 +412,7 @@ bebop_team_local() {
   ANTHROPIC_MODEL="$orch" ANTHROPIC_SMALL_FAST_MODEL="$orch" \
   CLAUDE_CODE_MAX_CONTEXT_TOKENS="$ctx" \
   CLAUDE_CODE_MAX_OUTPUT_TOKENS="$(_bebop_max_output "$orch")" \
-  claude --model "$orch" --strict-mcp-config --mcp-config "$dir/mcp.json" \
+  claude --permission-mode acceptEdits --model "$orch" --strict-mcp-config --mcp-config "$dir/mcp.json" \
     --agents "$_BT_AGENTS_JSON" \
     --append-system-prompt "$_BT_ORCH_PROMPT" "$@"
 }
@@ -487,7 +491,7 @@ bebop_ai_ops() {
   # loads no MCP servers. --agents injects the pack so the director can Task-dispatch leafs.
   dir="$(_bebop_profile_dir ai-ops)"
   CLAUDE_CONFIG_DIR="$dir" \
-  claude --model "$model" --strict-mcp-config --mcp-config "$dir/mcp.json" \
+  claude --permission-mode acceptEdits --model "$model" --strict-mcp-config --mcp-config "$dir/mcp.json" \
     --agents "$agents_json" \
     --append-system-prompt "$prompt" "$@"
 }
@@ -530,7 +534,7 @@ bebop_spec() {
   # the Skill tool (from the role frontmatter's allowlist) reaches the ten skills on demand.
   dir="$(_bebop_profile_dir spec)"
   CLAUDE_CONFIG_DIR="$dir" \
-  claude --model "$model" --strict-mcp-config --mcp-config "$dir/mcp.json" \
+  claude --permission-mode acceptEdits --model "$model" --strict-mcp-config --mcp-config "$dir/mcp.json" \
     --append-system-prompt "$prompt" "$@"
 }
 

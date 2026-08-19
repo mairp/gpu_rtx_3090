@@ -162,6 +162,28 @@ assert "qwen window matches the served -c 98304" grep -Eq '^    \[qwen\]=98304([
 assert "local routes fence to the solo profile" grep -q '_bebop_profile_dir solo' "$BEBOP"
 assert "fence is opt-out via BEBOP_NO_FENCE" grep -q 'BEBOP_NO_FENCE:-0' "$BEBOP"
 assert "compass fence is opt-in via BEBOP_FENCE" grep -q 'BEBOP_FENCE:-0' "$BEBOP"
+
+# CLAUDE_CONFIG_DIR replaces the global user settings. Without an explicit writable
+# interactive policy, current Claude Code can enter classifier-driven auto mode and
+# hard-deny ordinary work. Cover every writable launch surface; keep the deliberately
+# read-only ask surface in plan mode and let Wiggum supply its established autonomous
+# bypass flag later in argv.
+assert_eq "all fenced writable launches select acceptEdits (8 surfaces)" "8" \
+  "$(grep -Ec 'claude --permission-mode acceptEdits' "$BEBOP")"
+assert_eq "no writable fenced launch explicitly selects auto mode" "0" \
+  "$(grep -Ec 'claude --permission-mode auto([[:space:]]|$)' "$BEBOP")"
+assert "read-only ask remains in plan mode" \
+  grep -q 'claude -p "\$question" --model "\$model" --permission-mode plan' "$BEBOP"
+# Both Wiggum branches must remain free of a launcher-injected permission mode: its
+# noninteractive driver passes --dangerously-skip-permissions with IS_SANDBOX=1.
+wiggum_body="$(awk '
+  /^bebop_wiggum_proposer\(\) \{/ { inside=1 }
+  inside && /^bebop_ask\(\) \{/ { exit }
+  inside { print }
+' "$BEBOP")"
+assert_eq "Wiggum proposer keeps caller-owned permission policy" "0" \
+  "$(grep -c -- '--permission-mode' <<<"$wiggum_body")"
+
 SOLO="${AGENTPACK_HOME:-/root/agent-pack}/profiles/solo"
 assert "solo profile exists" test -f "$SOLO/mcp.json"
 assert "solo profile keeps the qmd MCP server" grep -q '"qmd"' "$SOLO/mcp.json"
